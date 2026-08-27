@@ -6,14 +6,22 @@ import yfinance as yf
 
 # Configure Web Page Layout
 st.set_page_config(
-    page_title="MA55 Channel Screener (1H)", page_icon="📊", layout="wide"
+    page_title="MA55 Channel & RSI Screener", page_icon="📊", layout="wide"
 )
 
 # --- CONFIGURATION CONSTANTS ---
 TICKER_FILE = "tickers.txt"
 MA_PERIOD = 55
 RSI_PERIOD = 14
-MAX_CANDLES_AGO = 10  # Look back up to 10 hourly candles
+MAX_CANDLES_AGO = 10  # Look back up to 10 candles for breakout signals
+
+# Mapping display timeframes to yfinance interval & period parameters
+TIMEFRAME_CONFIG = {
+    "1 Day": {"interval": "1d", "period": "200d", "unit": "Days"},
+    "4 Hours": {"interval": "1h", "period": "60d", "unit": "4H Bars (Est.)"},
+    "1 Hour": {"interval": "1h", "period": "60d", "unit": "Hours"},
+    "15 Mins": {"interval": "15m", "period": "30d", "unit": "15m Bars"},
+}
 
 
 def load_tickers(filepath=TICKER_FILE):
@@ -47,14 +55,33 @@ def calculate_rsi(series, period=14):
     return 100 - (100 / (1 + rs))
 
 
+def resample_4h(df):
+    """Resample 1-hour data into 4-hour candles for accurate 4H MA calculation."""
+    resampled = (
+        df.resample("4h")
+        .agg({
+            "Open": "first",
+            "High": "max",
+            "Low": "min",
+            "Close": "last",
+            "Volume": "sum",
+        })
+        .dropna()
+    )
+    return resampled
+
+
 @st.cache_data(ttl=900, show_spinner=False)
-def run_screener(ticker_list):
+def run_screener(ticker_list, timeframe_label):
     if not ticker_list:
         return pd.DataFrame()
 
-    # Changed period to "60d" and interval to "1h" for hourly intraday bars
+    tf_info = TIMEFRAME_CONFIG[timeframe_label]
+    interval = tf_info["interval"]
+    period = tf_info["period"]
+
     data = yf.download(
-        ticker_list, period="60d", interval="1h", group_by="ticker"
+        ticker_list, period=period, interval=interval, group_by="ticker"
     )
     results = []
 
@@ -66,6 +93,10 @@ def run_screener(ticker_list):
                 if ticker not in data.columns.levels[0]:
                     continue
                 df = data[ticker].dropna()
+
+            # Resample to 4H if selected
+            if timeframe_label == "4 Hours":
+                df = resample_4h(df)
 
             min_required = MA_PERIOD + MAX_CANDLES_AGO + 2
             if len(df) < min_required:
@@ -168,16 +199,23 @@ def apply_table_styles(df, oversold_val, overbought_val):
 
 # ==================== STREAMLIT UI ====================
 
-st.title("📊 MA55 Channel & RSI Market Screener (1-Hour)")
-st.caption("Live automated screening for market tickers on 1-Hour candles.")
+st.title("📊 Multi-Timeframe MA55 Channel & RSI Screener")
+st.caption("Dynamic automated market screening for trading signals across multiple timeframes.")
 
 tickers = load_tickers(TICKER_FILE)
 
 # Sidebar Parameter Controls
 with st.sidebar:
     st.header("Screener Controls")
+    
+    selected_tf = st.selectbox(
+        "⏱ Select Timeframe",
+        options=list(TIMEFRAME_CONFIG.keys()),
+        index=0  # Default to 1 Day
+    )
+    
     st.write(f"📁 Loaded Tickers: **{len(tickers)}**")
-    st.write(f"📈 MA Channel: **{MA_PERIOD} Period (1-Hour)**")
+    st.write(f"📈 MA Channel: **{MA_PERIOD} Period ({selected_tf})**")
 
     st.markdown("---")
     st.subheader("RSI Thresholds")
@@ -203,8 +241,10 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-with st.spinner(f"Screening {len(tickers)} symbols on 1-hour candles..."):
-    df_results = run_screener(tickers)
+with st.spinner(f"Screening {len(tickers)} symbols on {selected_tf} timeframe..."):
+    df_results = run_screener(tickers, selected_tf)
+
+time_unit = TIMEFRAME_CONFIG[selected_tf]["unit"]
 
 if not df_results.empty:
     priority_map = {"Bull": 0, "Bear": 1, "Touch Bull": 2, "Touch Bear": 3}
@@ -232,27 +272,27 @@ if not df_results.empty:
     column_formatting = {
         "Ticker": st.column_config.TextColumn("Ticker"),
         "Status": st.column_config.TextColumn("Signal Type"),
-        "Candles Ago": st.column_config.NumberColumn("Candles Ago (Hours)"),
+        "Candles Ago": st.column_config.NumberColumn(f"Candles Ago ({time_unit})"),
         "Last Price": st.column_config.NumberColumn("Last Price", format="$%.2f"),
         "MA High": st.column_config.NumberColumn("MA High (55)", format="$%.2f"),
         "MA Low": st.column_config.NumberColumn("MA Low (55)", format="$%.2f"),
         "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
     }
 
-    st.subheader("🔥 Active Signals (Last 3 Hourly Candles)")
+    st.subheader(f"🔥 Active Signals (Last 3 {time_unit})")
     if not df_recent.empty:
         styled_recent = apply_table_styles(df_recent, rsi_oversold, rsi_overbought)
         st.dataframe(styled_recent, use_container_width=True, hide_index=True, column_config=column_formatting)
     else:
-        st.info("No active signals detected in the last 3 hourly candles.")
+        st.info(f"No active signals detected in the last 3 {time_unit.lower()}.")
 
     st.markdown("---")
 
-    st.subheader("📋 Earlier Signals (> 3 Hourly Candles)")
+    st.subheader(f"📋 Earlier Signals (> 3 {time_unit})")
     if not df_older.empty:
         styled_older = apply_table_styles(df_older, rsi_oversold, rsi_overbought)
         st.dataframe(styled_older, use_container_width=True, hide_index=True, column_config=column_formatting)
     else:
         st.caption("No older signals present in current dataset.")
 else:
-    st.info(f"No signals detected across {len(tickers)} symbols on the 1-hour timeframe.")
+    st.info(f"No signals detected across {len(tickers)} symbols on the {selected_tf} timeframe.")
