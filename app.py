@@ -6,14 +6,14 @@ import yfinance as yf
 
 # Configure Web Page Layout
 st.set_page_config(
-    page_title="MA55 Channel Screener", page_icon="📊", layout="wide"
+    page_title="MA55 Channel Screener (1H)", page_icon="📊", layout="wide"
 )
 
 # --- CONFIGURATION CONSTANTS ---
 TICKER_FILE = "tickers.txt"
 MA_PERIOD = 55
 RSI_PERIOD = 14
-MAX_CANDLES_AGO = 10  # Look back up to 10 candles to populate both sections
+MAX_CANDLES_AGO = 10  # Look back up to 10 hourly candles
 
 
 def load_tickers(filepath=TICKER_FILE):
@@ -52,8 +52,9 @@ def run_screener(ticker_list):
     if not ticker_list:
         return pd.DataFrame()
 
+    # Changed period to "60d" and interval to "1h" for hourly intraday bars
     data = yf.download(
-        ticker_list, period="100d", interval="1d", group_by="ticker"
+        ticker_list, period="60d", interval="1h", group_by="ticker"
     )
     results = []
 
@@ -167,8 +168,8 @@ def apply_table_styles(df, oversold_val, overbought_val):
 
 # ==================== STREAMLIT UI ====================
 
-st.title("📊 MA55 Channel & RSI Market Screener")
-st.caption("Live automated screening for market tickers.")
+st.title("📊 MA55 Channel & RSI Market Screener (1-Hour)")
+st.caption("Live automated screening for market tickers on 1-Hour candles.")
 
 tickers = load_tickers(TICKER_FILE)
 
@@ -176,7 +177,7 @@ tickers = load_tickers(TICKER_FILE)
 with st.sidebar:
     st.header("Screener Controls")
     st.write(f"📁 Loaded Tickers: **{len(tickers)}**")
-    st.write(f"📈 MA Channel: **{MA_PERIOD} Period**")
+    st.write(f"📈 MA Channel: **{MA_PERIOD} Period (1-Hour)**")
 
     st.markdown("---")
     st.subheader("RSI Thresholds")
@@ -202,7 +203,7 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-with st.spinner(f"Screening {len(tickers)} symbols..."):
+with st.spinner(f"Screening {len(tickers)} symbols on 1-hour candles..."):
     df_results = run_screener(tickers)
 
 if not df_results.empty:
@@ -224,34 +225,34 @@ if not df_results.empty:
 
     st.markdown("---")
 
-    # Split output into Active (<= 3 candles) vs Earlier (> 3 candles)
+    # Split output into Active (<= 3 candles ago) vs Earlier (> 3 candles ago)
     df_recent = df_results[df_results["Candles Ago"] <= 3]
     df_older = df_results[df_results["Candles Ago"] > 3]
 
     column_formatting = {
         "Ticker": st.column_config.TextColumn("Ticker"),
         "Status": st.column_config.TextColumn("Signal Type"),
-        "Candles Ago": st.column_config.NumberColumn("Candles Ago"),
+        "Candles Ago": st.column_config.NumberColumn("Candles Ago (Hours)"),
         "Last Price": st.column_config.NumberColumn("Last Price", format="$%.2f"),
         "MA High": st.column_config.NumberColumn("MA High (55)", format="$%.2f"),
         "MA Low": st.column_config.NumberColumn("MA Low (55)", format="$%.2f"),
         "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
     }
 
-    st.subheader("🔥 Active Signals (Last 3 Candles)")
+    st.subheader("🔥 Active Signals (Last 3 Hourly Candles)")
     if not df_recent.empty:
         styled_recent = apply_table_styles(df_recent, rsi_oversold, rsi_overbought)
         st.dataframe(styled_recent, use_container_width=True, hide_index=True, column_config=column_formatting)
     else:
-        st.info("No active signals detected in the last 3 candles.")
+        st.info("No active signals detected in the last 3 hourly candles.")
 
     st.markdown("---")
 
-    st.subheader("📋 Earlier Signals (> 3 Candles)")
+    st.subheader("📋 Earlier Signals (> 3 Hourly Candles)")
     if not df_older.empty:
         styled_older = apply_table_styles(df_older, rsi_oversold, rsi_overbought)
         st.dataframe(styled_older, use_container_width=True, hide_index=True, column_config=column_formatting)
     else:
         st.caption("No older signals present in current dataset.")
 else:
-    st.info(f"No signals detected across {len(tickers)} symbols.")
+    st.info(f"No signals detected across {len(tickers)} symbols on the 1-hour timeframe.")
