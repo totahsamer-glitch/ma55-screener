@@ -6,13 +6,17 @@ import yfinance as yf
 
 # Configure Web Page Layout
 st.set_page_config(
-    page_title="MA55 Channel & RSI Screener", page_icon="📊", layout="wide"
+    page_title="MA55 Channel, RSI, MACD & SMA Cross Screener",
+    page_icon="📊",
+    layout="wide",
 )
 
 # --- CONFIGURATION CONSTANTS ---
 TICKER_FILE = "tickers.txt"
 MA_PERIOD = 55
 RSI_PERIOD = 14
+SMA_FAST_PERIOD = 13
+SMA_SLOW_PERIOD = 34
 MAX_CANDLES_AGO = 10  # Look back up to 10 candles for breakout signals
 
 # Mapping display timeframes to yfinance interval & period parameters
@@ -53,6 +57,39 @@ def calculate_rsi(series, period=14):
 
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
+
+
+def calculate_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist = macd_line - signal_line
+    return macd_line, signal_line, hist
+
+
+def find_latest_cross(fast_series, slow_series):
+    """Finds the type of cross (Bull/Bear) and how many candles ago it occurred."""
+    diff = fast_series - slow_series
+    # Identify index locations where sign changes (crossovers)
+    crosses = (np.sign(diff) != np.sign(diff.shift(1))) & (diff.shift(1).notna())
+
+    cross_indices = np.where(crosses)[0]
+    if len(cross_indices) == 0:
+        return "None", None
+
+    latest_cross_idx = cross_indices[-1]
+    candles_ago = len(series_len := fast_series) - 1 - latest_cross_idx
+
+    # Determine direction of the cross
+    if diff.iloc[latest_cross_idx] > 0 and diff.iloc[latest_cross_idx - 1] <= 0:
+        cross_type = "Bull Cross"
+    elif diff.iloc[latest_cross_idx] < 0 and diff.iloc[latest_cross_idx - 1] >= 0:
+        cross_type = "Bear Cross"
+    else:
+        cross_type = "None"
+
+    return cross_type, candles_ago
 
 
 def resample_4h(df):
@@ -98,13 +135,25 @@ def run_screener(ticker_list, timeframe_label):
             if timeframe_label == "4 Hours":
                 df = resample_4h(df)
 
-            min_required = MA_PERIOD + MAX_CANDLES_AGO + 2
+            min_required = max(MA_PERIOD, SMA_SLOW_PERIOD, 26 + 9) + MAX_CANDLES_AGO + 2
             if len(df) < min_required:
                 continue
 
+            # Indicator Calculations
             df["MA_High"] = df["High"].rolling(window=MA_PERIOD).mean()
             df["MA_Low"] = df["Low"].rolling(window=MA_PERIOD).mean()
             df["RSI"] = calculate_rsi(df["Close"], RSI_PERIOD)
+
+            # SMA 13 & SMA 34
+            df["SMA13"] = df["Close"].rolling(window=SMA_FAST_PERIOD).mean()
+            df["SMA34"] = df["Close"].rolling(window=SMA_SLOW_PERIOD).mean()
+
+            # MACD (12, 26, 9)
+            df["MACD"], df["MACD_Signal"], df["MACD_Hist"] = calculate_macd(df["Close"])
+
+            # Detect MACD and SMA Crosses
+            macd_cross_status, macd_cross_ago = find_latest_cross(df["MACD"], df["MACD_Signal"])
+            sma_cross_status, sma_cross_ago = find_latest_cross(df["SMA13"], df["SMA34"])
 
             last_rsi = (
                 round(df["RSI"].iloc[-1], 2)
@@ -112,6 +161,7 @@ def run_screener(ticker_list, timeframe_label):
                 else None
             )
 
+            # Signal evaluation for MA55 Channel Breakouts / Touches
             for i in range(1, MAX_CANDLES_AGO + 2):
                 curr = df.iloc[-i]
                 prev = df.iloc[-i - 1]
@@ -158,6 +208,10 @@ def run_screener(ticker_list, timeframe_label):
                         "MA High": round(c_ma_h, 2),
                         "MA Low": round(c_ma_l, 2),
                         "RSI (14)": last_rsi,
+                        "MACD Signal": macd_cross_status,
+                        "MACD Cross Ago": macd_cross_ago,
+                        "SMA (13/34)": sma_cross_status,
+                        "SMA Cross Ago": sma_cross_ago,
                     })
                     break
 
@@ -187,35 +241,39 @@ def style_rsi(val, oversold, overbought):
 
 
 def apply_table_styles(df, oversold_val, overbought_val):
-    return df.style.map(
-        style_status, subset=["Status"]
-    ).map(
-        style_rsi,
-        subset=["RSI (14)"],
-        oversold=oversold_val,
-        overbought=overbought_val,
+    return (
+        df.style.map(style_status, subset=["Status", "MACD Signal", "SMA (13/34)"])
+        .map(
+            style_rsi,
+            subset=["RSI (14)"],
+            oversold=oversold_val,
+            overbought=overbought_val,
+        )
     )
 
 
 # ==================== STREAMLIT UI ====================
 
-st.title("📊 Multi-Timeframe MA55 Channel & RSI Screener")
-st.caption("Dynamic automated market screening for trading signals across multiple timeframes.")
+st.title("📊 Multi-Timeframe MA55, RSI, MACD & SMA Screener")
+st.caption(
+    "Dynamic automated market screening for trading signals, MACD crossovers, and SMA 13/34 crossovers."
+)
 
 tickers = load_tickers(TICKER_FILE)
 
 # Sidebar Parameter Controls
 with st.sidebar:
     st.header("Screener Controls")
-    
+
     selected_tf = st.selectbox(
         "⏱ Select Timeframe",
         options=list(TIMEFRAME_CONFIG.keys()),
-        index=0  # Default to 1 Day
+        index=0,  # Default to 1 Day
     )
-    
+
     st.write(f"📁 Loaded Tickers: **{len(tickers)}**")
     st.write(f"📈 MA Channel: **{MA_PERIOD} Period ({selected_tf})**")
+    st.write(f"📊 SMA Cross: **13 / 34 ({selected_tf})**")
 
     st.markdown("---")
     st.subheader("RSI Thresholds")
@@ -277,6 +335,10 @@ if not df_results.empty:
         "MA High": st.column_config.NumberColumn("MA High (55)", format="$%.2f"),
         "MA Low": st.column_config.NumberColumn("MA Low (55)", format="$%.2f"),
         "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
+        "MACD Signal": st.column_config.TextColumn("MACD Cross"),
+        "MACD Cross Ago": st.column_config.NumberColumn(f"MACD Ago ({time_unit})"),
+        "SMA (13/34)": st.column_config.TextColumn("SMA 13/34 Cross"),
+        "SMA Cross Ago": st.column_config.NumberColumn(f"SMA Ago ({time_unit})"),
     }
 
     st.subheader(f"🔥 Active Signals (Last 3 {time_unit})")
