@@ -71,7 +71,6 @@ def calculate_macd(series, fast=12, slow=26, signal=9):
 def find_latest_cross(fast_series, slow_series):
     """Finds the type of cross (Bull/Bear) and how many candles ago it occurred."""
     diff = fast_series - slow_series
-    # Identify index locations where sign changes (crossovers)
     crosses = (np.sign(diff) != np.sign(diff.shift(1))) & (diff.shift(1).notna())
 
     cross_indices = np.where(crosses)[0]
@@ -79,9 +78,8 @@ def find_latest_cross(fast_series, slow_series):
         return "None", None
 
     latest_cross_idx = cross_indices[-1]
-    candles_ago = len(series_len := fast_series) - 1 - latest_cross_idx
+    candles_ago = len(fast_series) - 1 - latest_cross_idx
 
-    # Determine direction of the cross
     if diff.iloc[latest_cross_idx] > 0 and diff.iloc[latest_cross_idx - 1] <= 0:
         cross_type = "Bull Cross"
     elif diff.iloc[latest_cross_idx] < 0 and diff.iloc[latest_cross_idx - 1] >= 0:
@@ -117,27 +115,41 @@ def run_screener(ticker_list, timeframe_label):
     interval = tf_info["interval"]
     period = tf_info["period"]
 
+    # 1. Download primary intraday / chosen timeframe data
     data = yf.download(
         ticker_list, period=period, interval=interval, group_by="ticker"
     )
+
+    # 2. Download FIXED 1D daily data specifically for Previous Day High/Low calculation
+    data_daily = yf.download(
+        ticker_list, period="1mo", interval="1d", group_by="ticker"
+    )
+
     results = []
 
     for ticker in ticker_list:
         try:
+            # Extract intraday dataframe
             if len(ticker_list) == 1:
                 df = data.copy()
+                df_d = data_daily.copy()
             else:
                 if ticker not in data.columns.levels[0]:
                     continue
                 df = data[ticker].dropna()
+                df_d = data_daily[ticker].dropna() if ticker in data_daily.columns.levels[0] else pd.DataFrame()
 
-            # Resample to 4H if selected
+            # Resample main DF to 4H if selected
             if timeframe_label == "4 Hours":
                 df = resample_4h(df)
 
             min_required = max(MA_PERIOD, SMA_SLOW_PERIOD, 26 + 9) + MAX_CANDLES_AGO + 2
-            if len(df) < min_required:
+            if len(df) < min_required or len(df_d) < 2:
                 continue
+
+            # Calculate Previous Day High and Low (fixed from 1D daily candles)
+            prev_day_high = df_d["High"].iloc[-2]
+            prev_day_low = df_d["Low"].iloc[-2]
 
             # Indicator Calculations
             df["MA_High"] = df["High"].rolling(window=MA_PERIOD).mean()
@@ -212,6 +224,8 @@ def run_screener(ticker_list, timeframe_label):
                         "MACD Cross Ago": macd_cross_ago,
                         "SMA (13/34)": sma_cross_status,
                         "SMA Cross Ago": sma_cross_ago,
+                        "Prev Day High": round(prev_day_high, 2),
+                        "Prev Day Low": round(prev_day_low, 2),
                     })
                     break
 
@@ -240,6 +254,21 @@ def style_rsi(val, oversold, overbought):
     return ""
 
 
+def style_pdh_pdl(df):
+    """Highlights Prev Day High green on a bullish breakout, and Prev Day Low red on a bearish breakout."""
+    styles = pd.DataFrame("", index=df.index, columns=df.columns)
+    
+    if "Last Price" in df.columns and "Prev Day High" in df.columns:
+        bull_breakout = df["Last Price"] > df["Prev Day High"]
+        styles.loc[bull_breakout, "Prev Day High"] = "background-color: #1b382b; color: #4eff9e; font-weight: bold;"
+        
+    if "Last Price" in df.columns and "Prev Day Low" in df.columns:
+        bear_breakout = df["Last Price"] < df["Prev Day Low"]
+        styles.loc[bear_breakout, "Prev Day Low"] = "background-color: #3d1c1d; color: #ff6b6b; font-weight: bold;"
+        
+    return styles
+
+
 def apply_table_styles(df, oversold_val, overbought_val):
     return (
         df.style.map(style_status, subset=["Status", "MACD Signal", "SMA (13/34)"])
@@ -249,6 +278,7 @@ def apply_table_styles(df, oversold_val, overbought_val):
             oversold=oversold_val,
             overbought=overbought_val,
         )
+        .apply(style_pdh_pdl, axis=None)
     )
 
 
@@ -256,7 +286,7 @@ def apply_table_styles(df, oversold_val, overbought_val):
 
 st.title("📊 Multi-Timeframe MA55, RSI, MACD & SMA Screener")
 st.caption(
-    "Dynamic automated market screening for trading signals, MACD crossovers, and SMA 13/34 crossovers."
+    "Dynamic automated market screening for trading signals, MACD crossovers, SMA 13/34 crossovers, and Prev Day H/L Breakouts."
 )
 
 tickers = load_tickers(TICKER_FILE)
@@ -339,6 +369,8 @@ if not df_results.empty:
         "MACD Cross Ago": st.column_config.NumberColumn(f"MACD Ago ({time_unit})"),
         "SMA (13/34)": st.column_config.TextColumn("SMA 13/34 Cross"),
         "SMA Cross Ago": st.column_config.NumberColumn(f"SMA Ago ({time_unit})"),
+        "Prev Day High": st.column_config.NumberColumn("Prev Day High", format="$%.2f"),
+        "Prev Day Low": st.column_config.NumberColumn("Prev Day Low", format="$%.2f"),
     }
 
     st.subheader(f"🔥 Active Signals (Last 3 {time_unit})")
