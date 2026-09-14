@@ -6,7 +6,7 @@ import yfinance as yf
 
 # Configure Web Page Layout
 st.set_page_config(
-    page_title="MA55 Channel, RSI, MACD & SMA Cross Screener",
+    page_title="Region shares Screener",
     page_icon="📊",
     layout="wide",
 )
@@ -15,8 +15,7 @@ st.set_page_config(
 TICKER_FILE = "tickers.txt"
 MA_PERIOD = 55
 RSI_PERIOD = 14
-SMA_FAST_PERIOD = 13
-SMA_SLOW_PERIOD = 34
+SMA_21_PERIOD = 21
 MAX_CANDLES_AGO = 10  # Look back up to 10 candles for breakout signals
 
 # Mapping display timeframes to yfinance interval & period parameters
@@ -143,7 +142,7 @@ def run_screener(ticker_list, timeframe_label):
             if timeframe_label == "4 Hours":
                 df = resample_4h(df)
 
-            min_required = max(MA_PERIOD, SMA_SLOW_PERIOD, 26 + 9) + MAX_CANDLES_AGO + 2
+            min_required = max(MA_PERIOD, SMA_21_PERIOD, 26 + 9) + MAX_CANDLES_AGO + 2
             if len(df) < min_required or len(df_d) < 2:
                 continue
 
@@ -156,16 +155,15 @@ def run_screener(ticker_list, timeframe_label):
             df["MA_Low"] = df["Low"].rolling(window=MA_PERIOD).mean()
             df["RSI"] = calculate_rsi(df["Close"], RSI_PERIOD)
 
-            # SMA 13 & SMA 34
-            df["SMA13"] = df["Close"].rolling(window=SMA_FAST_PERIOD).mean()
-            df["SMA34"] = df["Close"].rolling(window=SMA_SLOW_PERIOD).mean()
+            # SMA 21 Calculation
+            df["SMA21"] = df["Close"].rolling(window=SMA_21_PERIOD).mean()
 
             # MACD (12, 26, 9)
             df["MACD"], df["MACD_Signal"], df["MACD_Hist"] = calculate_macd(df["Close"])
 
-            # Detect MACD and SMA Crosses
+            # Detect MACD and Price vs SMA 21 Crosses
             macd_cross_status, macd_cross_ago = find_latest_cross(df["MACD"], df["MACD_Signal"])
-            sma_cross_status, sma_cross_ago = find_latest_cross(df["SMA13"], df["SMA34"])
+            sma21_status, sma21_cross_ago = find_latest_cross(df["Close"], df["SMA21"])
 
             last_rsi = (
                 round(df["RSI"].iloc[-1], 2)
@@ -212,20 +210,26 @@ def run_screener(ticker_list, timeframe_label):
                     status = "Touch Bear"
 
                 if status:
+                    # Dynamic rounding precision based on price magnitude
+                    decimals = 4 if c_close < 1.0 else 2
+
+                    c_sma21 = curr["SMA21"]
+
                     results.append({
                         "Ticker": ticker,
                         "Status": status,
                         "Candles Ago": i - 1,
-                        "Last Price": round(c_close, 2),
-                        "MA High": round(c_ma_h, 2),
-                        "MA Low": round(c_ma_l, 2),
+                        "Last Price": round(c_close, decimals),
+                        "MA High": round(c_ma_h, decimals),
+                        "MA Low": round(c_ma_l, decimals),
                         "RSI (14)": last_rsi,
                         "MACD Signal": macd_cross_status,
                         "MACD Cross Ago": macd_cross_ago,
-                        "SMA (13/34)": sma_cross_status,
-                        "SMA Cross Ago": sma_cross_ago,
-                        "Prev Day High": round(prev_day_high, 2),
-                        "Prev Day Low": round(prev_day_low, 2),
+                        "SMA 21": round(c_sma21, decimals) if not pd.isna(c_sma21) else None,
+                        "SMA 21 Cross": sma21_status,
+                        "SMA 21 Cross Ago": sma21_cross_ago,
+                        "Prev Day High": round(prev_day_high, decimals),
+                        "Prev Day Low": round(prev_day_low, decimals),
                     })
                     break
 
@@ -271,7 +275,7 @@ def style_pdh_pdl(df):
 
 def apply_table_styles(df, oversold_val, overbought_val):
     return (
-        df.style.map(style_status, subset=["Status", "MACD Signal", "SMA (13/34)"])
+        df.style.map(style_status, subset=["Status", "MACD Signal", "SMA 21 Cross"])
         .map(
             style_rsi,
             subset=["RSI (14)"],
@@ -284,9 +288,9 @@ def apply_table_styles(df, oversold_val, overbought_val):
 
 # ==================== STREAMLIT UI ====================
 
-st.title("📊 Multi-Timeframe MA55, RSI, MACD & SMA Screener")
+st.title("📊 Regional shares Screener")
 st.caption(
-    "Dynamic automated market screening for trading signals, MACD crossovers, SMA 13/34 crossovers, and Prev Day H/L Breakouts."
+    "Dynamic automated market screening for trading signals, MACD crossovers, SMA 21 breakouts, and Prev Day H/L Breakouts."
 )
 
 tickers = load_tickers(TICKER_FILE)
@@ -303,7 +307,7 @@ with st.sidebar:
 
     st.write(f"📁 Loaded Tickers: **{len(tickers)}**")
     st.write(f"📈 MA Channel: **{MA_PERIOD} Period ({selected_tf})**")
-    st.write(f"📊 SMA Cross: **13 / 34 ({selected_tf})**")
+    st.write(f"📊 SMA Trend: **21 Period ({selected_tf})**")
 
     st.markdown("---")
     st.subheader("RSI Thresholds")
@@ -357,20 +361,25 @@ if not df_results.empty:
     df_recent = df_results[df_results["Candles Ago"] <= 3]
     df_older = df_results[df_results["Candles Ago"] > 3]
 
+    # Dynamically determine formatting string per column based on price thresholds across the whole result set
+    is_penny = (df_results["Last Price"] < 1.0).any() if "Last Price" in df_results.columns else False
+    price_format = "$%.4f" if is_penny else "$%.2f"
+
     column_formatting = {
         "Ticker": st.column_config.TextColumn("Ticker"),
         "Status": st.column_config.TextColumn("Signal Type"),
         "Candles Ago": st.column_config.NumberColumn(f"Candles Ago ({time_unit})"),
-        "Last Price": st.column_config.NumberColumn("Last Price", format="$%.2f"),
-        "MA High": st.column_config.NumberColumn("MA High (55)", format="$%.2f"),
-        "MA Low": st.column_config.NumberColumn("MA Low (55)", format="$%.2f"),
+        "Last Price": st.column_config.NumberColumn("Last Price", format=price_format),
+        "MA High": st.column_config.NumberColumn("MA High", format=price_format),
+        "MA Low": st.column_config.NumberColumn("MA Low", format=price_format),
         "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
         "MACD Signal": st.column_config.TextColumn("MACD Cross"),
         "MACD Cross Ago": st.column_config.NumberColumn(f"MACD Ago ({time_unit})"),
-        "SMA (13/34)": st.column_config.TextColumn("SMA 13/34 Cross"),
-        "SMA Cross Ago": st.column_config.NumberColumn(f"SMA Ago ({time_unit})"),
-        "Prev Day High": st.column_config.NumberColumn("Prev Day High", format="$%.2f"),
-        "Prev Day Low": st.column_config.NumberColumn("Prev Day Low", format="$%.2f"),
+        "SMA 21": st.column_config.NumberColumn("SMA 21", format=price_format),
+        "SMA 21 Cross": st.column_config.TextColumn("SMA 21 Cross"),
+        "SMA 21 Cross Ago": st.column_config.NumberColumn(f"SMA 21 Ago ({time_unit})"),
+        "Prev Day High": st.column_config.NumberColumn("Prev Day High", format=price_format),
+        "Prev Day Low": st.column_config.NumberColumn("Prev Day Low", format=price_format),
     }
 
     st.subheader(f"🔥 Active Signals (Last 3 {time_unit})")
