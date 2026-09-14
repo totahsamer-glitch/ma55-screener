@@ -6,7 +6,7 @@ import yfinance as yf
 
 # Configure Web Page Layout
 st.set_page_config(
-    page_title="Region shares Screener",
+    page_title="US Stocks Screener",
     page_icon="📊",
     layout="wide",
 )
@@ -288,7 +288,7 @@ def apply_table_styles(df, oversold_val, overbought_val):
 
 # ==================== STREAMLIT UI ====================
 
-st.title("📊 Regional shares Screener")
+st.title("📊 US shares Screener")
 st.caption(
     "Dynamic automated market screening for trading signals, MACD crossovers, SMA 21 breakouts, and Prev Day H/L Breakouts."
 )
