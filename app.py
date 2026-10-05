@@ -377,4 +377,40 @@ if not df_results.empty:
     df_older = df_results[df_results["Candles Ago"] > 3]
 
     # Dynamically determine formatting string per column based on price thresholds across the whole result set
-    is
+    is_penny = (df_results["Last Price"] < 1.0).any() if "Last Price" in df_results.columns else False
+    price_format = "$%.4f" if is_penny else "$%.2f"
+
+    column_formatting = {
+        "Ticker": st.column_config.TextColumn("Ticker"),
+        "Status": st.column_config.TextColumn("Signal Type"),
+        "Candles Ago": st.column_config.NumberColumn(f"Candles Ago ({time_unit})"),
+        "Last Price": st.column_config.NumberColumn("Last Price", format=price_format),
+        "MA High": st.column_config.NumberColumn("MA High", format=price_format),
+        "MA Low": st.column_config.NumberColumn("MA Low", format=price_format),
+        "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
+        "MACD Signal": st.column_config.TextColumn("MACD Cross"),
+        "MACD Cross Ago": st.column_config.NumberColumn(f"MACD Ago ({time_unit})"),
+        "SMA 21": st.column_config.NumberColumn("SMA 21", format=price_format),
+        "SMA 21 Cross": st.column_config.TextColumn("SMA 21 Cross"),
+        "SMA 21 Cross Ago": st.column_config.NumberColumn(f"SMA 21 Ago ({time_unit})"),
+        "Monday High": st.column_config.NumberColumn("Monday High", format=price_format),
+        "Monday Low": st.column_config.NumberColumn("Monday Low", format=price_format),
+    }
+
+    st.subheader(f"🔥 Active Signals (Last 3 {time_unit})")
+    if not df_recent.empty:
+        styled_recent = apply_table_styles(df_recent, rsi_oversold, rsi_overbought)
+        st.dataframe(styled_recent, use_container_width=True, hide_index=True, column_config=column_formatting)
+    else:
+        st.info(f"No active signals detected in the last 3 {time_unit.lower()}.")
+
+    st.markdown("---")
+
+    st.subheader(f"📋 Earlier Signals (> 3 {time_unit})")
+    if not df_older.empty:
+        styled_older = apply_table_styles(df_older, rsi_oversold, rsi_overbought)
+        st.dataframe(styled_older, use_container_width=True, hide_index=True, column_config=column_formatting)
+    else:
+        st.caption("No older signals present in current dataset.")
+else:
+    st.info(f"No signals detected across {len(tickers)} symbols on the {selected_tf} timeframe.")
