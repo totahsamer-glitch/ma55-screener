@@ -119,9 +119,9 @@ def run_screener(ticker_list, timeframe_label):
         ticker_list, period=period, interval=interval, group_by="ticker"
     )
 
-    # 2. Download FIXED 1D daily data specifically for Previous Day High/Low calculation
+    # 2. Download FIXED 1D daily data for Monday High/Low calculation
     data_daily = yf.download(
-        ticker_list, period="1mo", interval="1d", group_by="ticker"
+        ticker_list, period="3mo", interval="1d", group_by="ticker"
     )
 
     results = []
@@ -143,12 +143,27 @@ def run_screener(ticker_list, timeframe_label):
                 df = resample_4h(df)
 
             min_required = max(MA_PERIOD, SMA_21_PERIOD, 26 + 9) + MAX_CANDLES_AGO + 2
-            if len(df) < min_required or len(df_d) < 2:
+            if len(df) < min_required or df_d.empty:
                 continue
 
-            # Calculate Previous Day High and Low (fixed from 1D daily candles)
-            prev_day_high = df_d["High"].iloc[-2]
-            prev_day_low = df_d["Low"].iloc[-2]
+            # Check screening day and calculate Monday High/Low
+            last_date = df_d.index[-1]
+            screening_day_of_week = last_date.dayofweek  # 0 = Monday
+
+            if screening_day_of_week == 0:
+                # Screening day is Monday -> Leave blank
+                monday_high = np.nan
+                monday_low = np.nan
+            else:
+                # Find the most recent Monday in daily data
+                mondays = df_d[df_d.index.dayofweek == 0]
+                if not mondays.empty:
+                    latest_monday = mondays.iloc[-1]
+                    monday_high = latest_monday["High"]
+                    monday_low = latest_monday["Low"]
+                else:
+                    monday_high = np.nan
+                    monday_low = np.nan
 
             # Indicator Calculations
             df["MA_High"] = df["High"].rolling(window=MA_PERIOD).mean()
@@ -228,8 +243,8 @@ def run_screener(ticker_list, timeframe_label):
                         "SMA 21": round(c_sma21, decimals) if not pd.isna(c_sma21) else None,
                         "SMA 21 Cross": sma21_status,
                         "SMA 21 Cross Ago": sma21_cross_ago,
-                        "Prev Day High": round(prev_day_high, decimals),
-                        "Prev Day Low": round(prev_day_low, decimals),
+                        "Monday High": round(monday_high, decimals) if not pd.isna(monday_high) else None,
+                        "Monday Low": round(monday_low, decimals) if not pd.isna(monday_low) else None,
                     })
                     break
 
@@ -258,18 +273,18 @@ def style_rsi(val, oversold, overbought):
     return ""
 
 
-def style_pdh_pdl(df):
-    """Highlights Prev Day High green on a bullish breakout, and Prev Day Low red on a bearish breakout."""
+def style_monday_hl(df):
+    """Highlights Monday High green on a bullish breakout, and Monday Low red on a bearish breakout."""
     styles = pd.DataFrame("", index=df.index, columns=df.columns)
-    
-    if "Last Price" in df.columns and "Prev Day High" in df.columns:
-        bull_breakout = df["Last Price"] > df["Prev Day High"]
-        styles.loc[bull_breakout, "Prev Day High"] = "background-color: #1b382b; color: #4eff9e; font-weight: bold;"
-        
-    if "Last Price" in df.columns and "Prev Day Low" in df.columns:
-        bear_breakout = df["Last Price"] < df["Prev Day Low"]
-        styles.loc[bear_breakout, "Prev Day Low"] = "background-color: #3d1c1d; color: #ff6b6b; font-weight: bold;"
-        
+
+    if "Last Price" in df.columns and "Monday High" in df.columns:
+        bull_breakout = (df["Monday High"].notna()) & (df["Last Price"] > df["Monday High"])
+        styles.loc[bull_breakout, "Monday High"] = "background-color: #1b382b; color: #4eff9e; font-weight: bold;"
+
+    if "Last Price" in df.columns and "Monday Low" in df.columns:
+        bear_breakout = (df["Monday Low"].notna()) & (df["Last Price"] < df["Monday Low"])
+        styles.loc[bear_breakout, "Monday Low"] = "background-color: #3d1c1d; color: #ff6b6b; font-weight: bold;"
+
     return styles
 
 
@@ -282,7 +297,7 @@ def apply_table_styles(df, oversold_val, overbought_val):
             oversold=oversold_val,
             overbought=overbought_val,
         )
-        .apply(style_pdh_pdl, axis=None)
+        .apply(style_monday_hl, axis=None)
     )
 
 
@@ -290,7 +305,7 @@ def apply_table_styles(df, oversold_val, overbought_val):
 
 st.title("📊 US shares Screener")
 st.caption(
-    "Dynamic automated market screening for trading signals, MACD crossovers, SMA 21 breakouts, and Prev Day H/L Breakouts."
+    "Dynamic automated market screening for trading signals, MACD crossovers, SMA 21 breakouts, and Monday H/L Breakouts."
 )
 
 tickers = load_tickers(TICKER_FILE)
@@ -362,40 +377,4 @@ if not df_results.empty:
     df_older = df_results[df_results["Candles Ago"] > 3]
 
     # Dynamically determine formatting string per column based on price thresholds across the whole result set
-    is_penny = (df_results["Last Price"] < 1.0).any() if "Last Price" in df_results.columns else False
-    price_format = "$%.4f" if is_penny else "$%.2f"
-
-    column_formatting = {
-        "Ticker": st.column_config.TextColumn("Ticker"),
-        "Status": st.column_config.TextColumn("Signal Type"),
-        "Candles Ago": st.column_config.NumberColumn(f"Candles Ago ({time_unit})"),
-        "Last Price": st.column_config.NumberColumn("Last Price", format=price_format),
-        "MA High": st.column_config.NumberColumn("MA High", format=price_format),
-        "MA Low": st.column_config.NumberColumn("MA Low", format=price_format),
-        "RSI (14)": st.column_config.NumberColumn("RSI (14)", format="%.2f"),
-        "MACD Signal": st.column_config.TextColumn("MACD Cross"),
-        "MACD Cross Ago": st.column_config.NumberColumn(f"MACD Ago ({time_unit})"),
-        "SMA 21": st.column_config.NumberColumn("SMA 21", format=price_format),
-        "SMA 21 Cross": st.column_config.TextColumn("SMA 21 Cross"),
-        "SMA 21 Cross Ago": st.column_config.NumberColumn(f"SMA 21 Ago ({time_unit})"),
-        "Prev Day High": st.column_config.NumberColumn("Prev Day High", format=price_format),
-        "Prev Day Low": st.column_config.NumberColumn("Prev Day Low", format=price_format),
-    }
-
-    st.subheader(f"🔥 Active Signals (Last 3 {time_unit})")
-    if not df_recent.empty:
-        styled_recent = apply_table_styles(df_recent, rsi_oversold, rsi_overbought)
-        st.dataframe(styled_recent, use_container_width=True, hide_index=True, column_config=column_formatting)
-    else:
-        st.info(f"No active signals detected in the last 3 {time_unit.lower()}.")
-
-    st.markdown("---")
-
-    st.subheader(f"📋 Earlier Signals (> 3 {time_unit})")
-    if not df_older.empty:
-        styled_older = apply_table_styles(df_older, rsi_oversold, rsi_overbought)
-        st.dataframe(styled_older, use_container_width=True, hide_index=True, column_config=column_formatting)
-    else:
-        st.caption("No older signals present in current dataset.")
-else:
-    st.info(f"No signals detected across {len(tickers)} symbols on the {selected_tf} timeframe.")
+    is
