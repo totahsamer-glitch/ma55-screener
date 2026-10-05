@@ -183,7 +183,7 @@ def run_screener(ticker_list, timeframe_label):
             last_rsi = (
                 round(df["RSI"].iloc[-1], 2)
                 if not pd.isna(df["RSI"].iloc[-1])
-                else None
+                else np.nan
             )
 
             # Signal evaluation for MA55 Channel Breakouts / Touches
@@ -240,11 +240,11 @@ def run_screener(ticker_list, timeframe_label):
                         "RSI (14)": last_rsi,
                         "MACD Signal": macd_cross_status,
                         "MACD Cross Ago": macd_cross_ago,
-                        "SMA 21": round(c_sma21, decimals) if not pd.isna(c_sma21) else None,
+                        "SMA 21": round(c_sma21, decimals) if not pd.isna(c_sma21) else np.nan,
                         "SMA 21 Cross": sma21_status,
                         "SMA 21 Cross Ago": sma21_cross_ago,
-                        "Monday High": round(monday_high, decimals) if not pd.isna(monday_high) else None,
-                        "Monday Low": round(monday_low, decimals) if not pd.isna(monday_low) else None,
+                        "Monday High": round(monday_high, decimals) if not pd.isna(monday_high) else np.nan,
+                        "Monday Low": round(monday_low, decimals) if not pd.isna(monday_low) else np.nan,
                     })
                     break
 
@@ -278,11 +278,15 @@ def style_monday_hl(df):
     styles = pd.DataFrame("", index=df.index, columns=df.columns)
 
     if "Last Price" in df.columns and "Monday High" in df.columns:
-        bull_breakout = (df["Monday High"].notna()) & (df["Last Price"] > df["Monday High"])
+        m_high = pd.to_numeric(df["Monday High"], errors="coerce")
+        last_price = pd.to_numeric(df["Last Price"], errors="coerce")
+        bull_breakout = m_high.notna() & (last_price > m_high)
         styles.loc[bull_breakout, "Monday High"] = "background-color: #1b382b; color: #4eff9e; font-weight: bold;"
 
     if "Last Price" in df.columns and "Monday Low" in df.columns:
-        bear_breakout = (df["Monday Low"].notna()) & (df["Last Price"] < df["Monday Low"])
+        m_low = pd.to_numeric(df["Monday Low"], errors="coerce")
+        last_price = pd.to_numeric(df["Last Price"], errors="coerce")
+        bear_breakout = m_low.notna() & (last_price < m_low)
         styles.loc[bear_breakout, "Monday Low"] = "background-color: #3d1c1d; color: #ff6b6b; font-weight: bold;"
 
     return styles
